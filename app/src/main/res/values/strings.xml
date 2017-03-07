@@ -1,0 +1,8 @@
+<resources>
+    <!-- app -->
+    <string name="app_name">Farm Edge Pro</string>
+    <string name="title_activity_maps">Map</string>
+
+    <!-- ui -->
+    <string name="btn_detect">Detect Edges!</string>
+</resources>
