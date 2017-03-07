@@ -1,5 +1,6 @@
 package com.nwsmk.android.farmedgepro;
 
+import android.app.ProgressDialog;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -197,22 +198,37 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         MatOfPoint encloseContour = new MatOfPoint();
 
+        private ProgressDialog mProgressDialog = new ProgressDialog(MapsActivity.this);
+
         public EdgeDetector() {
         }
 
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
+            mProgressDialog.setMessage("Starting process...");
         }
 
         @Override
         protected Void doInBackground(Void... arg0) {
 
+            mProgressDialog.setMessage("Converting to grayscale image...");
             Mat grayMat = getGrayScaleMat();
+
+            mProgressDialog.setMessage("Performing Canny edge detection...");
             Mat cannyMat = getCannyMat(grayMat, 10, 100);
+
+            mProgressDialog.setMessage("Performing Hough line transform...");
             Mat houghLineMat = getHoughLinesMat(cannyMat, 90, 100, 60);
+
+            mProgressDialog.setMessage("Performing contour detection...");
             List<MatOfPoint> validContours = getContours(houghLineMat, 0.2f);
+
+            String numContours = Integer.toString(validContours.size());
+            mProgressDialog.setMessage("Processing contours: " + numContours + " ...");
             List<MatOfPoint2f> approxContours = getApproxPolyContours(validContours);
+
+            mProgressDialog.setMessage("Searching for enclose contour...");
             encloseContour = getEncloseContour(approxContours);
 
             return null;
@@ -220,6 +236,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
         @Override
         protected void onPostExecute(Void result) {
+            mProgressDialog.dismiss();
             drawContourOnMap(encloseContour);
         }
 
