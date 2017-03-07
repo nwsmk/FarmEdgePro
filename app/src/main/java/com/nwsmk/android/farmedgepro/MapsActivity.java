@@ -10,7 +10,6 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
-import android.widget.ProgressBar;
 import android.widget.Toast;
 
 import com.google.android.gms.maps.CameraUpdateFactory;
@@ -50,6 +49,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private Point searchPoint;
 
     private Button mBtnDetect;
+    private ProgressDialog mProgressDialog;
 
     private BaseLoaderCallback mBaseLoaderCallback = new BaseLoaderCallback(this) {
 
@@ -122,7 +122,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             }
         });
 
-        /** Inflates UI */
+        // progress dialog
+        mProgressDialog = new ProgressDialog(this);
+
         // show detect edges button
         mBtnDetect = (Button) findViewById(R.id.btn_detect);
         mBtnDetect.setOnClickListener(new View.OnClickListener() {
@@ -141,6 +143,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                             bmp.compress(Bitmap.CompressFormat.PNG, 90, out);
 
                             // start edge detection process
+                            mProgressDialog.setMessage("Starting process...");
+                            mProgressDialog.setCancelable(false);
+                            mProgressDialog.show();
                             new EdgeDetector().execute();
 
                         } catch (IOException e) {
@@ -194,11 +199,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         return latLng;
     }
 
-    private class EdgeDetector extends AsyncTask<Void, Void, Void> {
+    private class EdgeDetector extends AsyncTask<Void, String, Void> {
 
         MatOfPoint encloseContour = new MatOfPoint();
 
-        private ProgressDialog mProgressDialog = new ProgressDialog(MapsActivity.this);
+
 
         public EdgeDetector() {
         }
@@ -206,32 +211,36 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         @Override
         protected void onPreExecute() {
             super.onPreExecute();
-            mProgressDialog.setMessage("Starting process...");
         }
 
         @Override
         protected Void doInBackground(Void... arg0) {
 
-            mProgressDialog.setMessage("Converting to grayscale image...");
+            publishProgress("Converting to grayscale image...");
             Mat grayMat = getGrayScaleMat();
 
-            mProgressDialog.setMessage("Performing Canny edge detection...");
+            publishProgress("Performing Canny edge detection...");
             Mat cannyMat = getCannyMat(grayMat, 10, 100);
 
-            mProgressDialog.setMessage("Performing Hough line transform...");
+            publishProgress("Performing Hough line transform...");
             Mat houghLineMat = getHoughLinesMat(cannyMat, 90, 100, 60);
 
-            mProgressDialog.setMessage("Performing contour detection...");
+            publishProgress("Performing contour detection...");
             List<MatOfPoint> validContours = getContours(houghLineMat, 0.2f);
 
             String numContours = Integer.toString(validContours.size());
-            mProgressDialog.setMessage("Processing contours: " + numContours + " ...");
+            publishProgress("Processing contours: " + numContours + " ...");
             List<MatOfPoint2f> approxContours = getApproxPolyContours(validContours);
 
-            mProgressDialog.setMessage("Searching for enclose contour...");
+            publishProgress("Searching for enclose contour...");
             encloseContour = getEncloseContour(approxContours);
 
             return null;
+        }
+
+        @Override
+        protected void onProgressUpdate(String... progress) {
+            mProgressDialog.setMessage(progress[0]);
         }
 
         @Override
@@ -332,10 +341,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         // perform contour detection
         private List<MatOfPoint> getContours(Mat inMat, float areaWeight) {
 
-            List<MatOfPoint> contours = new ArrayList<MatOfPoint>();
+            List<MatOfPoint> contours = new ArrayList<>();
 
             // valid countours are contours with acceptable area
-            List<MatOfPoint> validContours = new ArrayList<MatOfPoint>();
+            List<MatOfPoint> validContours;
 
             Mat hierarchy = new Mat();
 
@@ -381,7 +390,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         // get valid contours
         private List<MatOfPoint> getValidContours(List<MatOfPoint> contours, Mat hierarchy, double maxArea, float weight) {
 
-            List<MatOfPoint> validContours = new ArrayList<MatOfPoint>();
+            List<MatOfPoint> validContours = new ArrayList<>();
 
             for (int i = 0; i < contours.size(); i++) {
                 double[] contourInfo = hierarchy.get(0, i);
@@ -400,9 +409,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         private List<MatOfPoint2f> getApproxPolyContours(List<MatOfPoint> contours) {
 
             // contours in 2D (float)
-            List<MatOfPoint2f> contours2f     = new ArrayList<MatOfPoint2f>();
+            List<MatOfPoint2f> contours2f     = new ArrayList<>();
             // approximated contours in 2D (float)
-            List<MatOfPoint2f> polyMOP2f      = new ArrayList<MatOfPoint2f>();
+            List<MatOfPoint2f> polyMOP2f      = new ArrayList<>();
 
 
             // init list
