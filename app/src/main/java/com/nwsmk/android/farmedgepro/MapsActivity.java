@@ -1,10 +1,13 @@
 package com.nwsmk.android.farmedgepro;
 
+import android.Manifest;
 import android.app.ProgressDialog;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.os.AsyncTask;
+import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -19,6 +22,7 @@ import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.PolygonOptions;
+import com.google.maps.android.SphericalUtil;
 
 import org.opencv.android.BaseLoaderCallback;
 import org.opencv.android.LoaderCallbackInterface;
@@ -30,6 +34,7 @@ import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 
@@ -41,9 +46,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+import static com.nwsmk.android.farmedgepro.Utils.mean;
+import static com.nwsmk.android.farmedgepro.Utils.sum2D;
+import static java.lang.Math.abs;
+import static java.lang.Math.floor;
+import static java.lang.Math.max;
+import static java.lang.Math.min;
+import static java.lang.Math.round;
+
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback {
 
     private static final String TAG = MapsActivity.class.getSimpleName();
+    private static final int PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION = 0x01;
 
     private GoogleMap mMap;
     private Point searchPoint;
@@ -58,10 +72,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             switch (status) {
                 case LoaderCallbackInterface.SUCCESS: {
                     Log.i("OpenCV", "OpenCV loaded sucessfully");
-                } break;
+                }
+                break;
                 default: {
                     super.onManagerConnected(status);
-                } break;
+                }
+                break;
             }
         }
     };
@@ -103,6 +119,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mMap = googleMap;
 
         /** Map setup */
+        // set enable self position
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    PERMISSIONS_REQUEST_ACCESS_FINE_LOCATION);
+            return;
+        }
+        mMap.setMyLocationEnabled(true);
+
         // set map type to satellite imagery
         mMap.setMapType(GoogleMap.MAP_TYPE_SATELLITE);
 
@@ -130,6 +155,13 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         mBtnDetect.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // start edge detection process
+                mProgressDialog.setMessage("Starting process...");
+                mProgressDialog.setCancelable(false);
+                mProgressDialog.show();
+
+                mMap.clear();
+
                 // start capturing images
                 GoogleMap.SnapshotReadyCallback callback = new GoogleMap.SnapshotReadyCallback() {
                     Bitmap bmp;
@@ -142,10 +174,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                             FileOutputStream out = new FileOutputStream("/mnt/sdcard/Pictures/out.png");
                             bmp.compress(Bitmap.CompressFormat.PNG, 90, out);
 
-                            // start edge detection process
-                            mProgressDialog.setMessage("Starting process...");
-                            mProgressDialog.setCancelable(false);
-                            mProgressDialog.show();
                             new EdgeDetector().execute();
 
                         } catch (IOException e) {
@@ -176,9 +204,62 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             }
             polygonOptions.fillColor(Color.argb(40, 128, 156, 247));
             mMap.addPolygon(polygonOptions);
+
+            // add area info
+            tmpLatLng = getLatLngFromPixel(points[0]);
+            double calAreaSqm = SphericalUtil.computeArea(polygonOptions.getPoints());
+            // find rai
+            int rai = (int) floor(calAreaSqm / 1600);
+            int residual_rai = (int) (calAreaSqm - (rai*1600));
+            int ngan = (int) floor(residual_rai / 400);
+            int residual_ngan = (int) (residual_rai - (ngan*400));
+            int wa = (int) floor(residual_ngan/4);
+
+            String sTitle = "Total area: " + calAreaSqm + " sq.m.";
+            String sCalAreaSqm = "Area: Rai = " + rai + ", Ngan = " + ngan + ", Tarang-wa = " + wa;
+            mMap.addMarker(new MarkerOptions().position(tmpLatLng).title(sTitle).snippet(sCalAreaSqm)).showInfoWindow();
+
         } else {
             Toast.makeText(getApplicationContext(), "Cannot detect edges", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    // draw contour on map
+    private void drawContourOnMap(List<MatOfPoint2f> contours2f) {
+
+        List<MatOfPoint> contours = new ArrayList<MatOfPoint>();
+
+        for (int i = 0; i < contours2f.size(); i++) {
+            contours.add(new MatOfPoint());
+        }
+
+        for (int i = 0; i < contours2f.size(); i++) {
+            contours2f.get(i).convertTo(contours.get(i), CvType.CV_32S);
+        }
+
+        for (int i = 0; i < contours.size(); i++) {
+
+            Point[] points = contours.get(i).toArray();
+            LatLng tmpLatLng;
+
+            PolygonOptions polygonOptions = new PolygonOptions();
+
+            Log.d(TAG, "FINAL POLYGON LEN: " + points.length);
+
+            if (points.length > 0) {
+                for (int j = 0; j < points.length; j++) {
+                    tmpLatLng = getLatLngFromPixel(points[j]);
+                    mMap.addMarker(new MarkerOptions().position(tmpLatLng));
+                    polygonOptions.add(tmpLatLng);
+                }
+                polygonOptions.fillColor(Color.argb(40, 128, 156, 247));
+                mMap.addPolygon(polygonOptions);
+            } else {
+                Toast.makeText(getApplicationContext(), "Cannot detect edges", Toast.LENGTH_SHORT).show();
+            }
+
+        }
+
     }
 
     // get pixel coordinates from lat/lng input
@@ -202,8 +283,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private class EdgeDetector extends AsyncTask<Void, String, Void> {
 
         MatOfPoint encloseContour = new MatOfPoint();
+        List<MatOfPoint> validContours;
+        List<MatOfPoint2f> approxContours;
 
-
+        private Bitmap debugBmp;
 
         public EdgeDetector() {
         }
@@ -216,21 +299,33 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         @Override
         protected Void doInBackground(Void... arg0) {
 
+            publishProgress("Region Growing...");
+            Mat growMat = grow(searchPoint);
+
             publishProgress("Converting to grayscale image...");
-            Mat grayMat = getGrayScaleMat();
+            /** PRO VERSION Mat grayMat = getGrayScaleMat(); */
+            //Mat grayMat = getGrayScaleMat(growMat);
+
+            //publishProgress("Performing floodfill image segmentation...");
+            //Mat floodFillMat = getFloodFillMat(grayMat);
 
             publishProgress("Performing Canny edge detection...");
-            Mat cannyMat = getCannyMat(grayMat, 10, 100);
+            //Mat cannyMat = getCannyMat(growMat, 50, 90);
+            //Mat cannyMat = getCannyMat(growMat, 10, 100);
+            //Mat cannyMat = getCannyMat(grayMat, 10, 100);
+            //Mat cannyMat = getCannyMat(floodFillMat, 10, 100);
 
             publishProgress("Performing Hough line transform...");
-            Mat houghLineMat = getHoughLinesMat(cannyMat, 90, 100, 60);
+            //Mat houghLineMat = getHoughLinesMat(cannyMat, 90, 100, 60);
 
             publishProgress("Performing contour detection...");
-            List<MatOfPoint> validContours = getContours(houghLineMat, 0.2f);
+            validContours = getContours(growMat, 0.1f);
+            //validContours = getContours(houghLineMat, 0.1f);
+            //validContours = getContours(cannyMat, 0.1f);
 
             String numContours = Integer.toString(validContours.size());
             publishProgress("Processing contours: " + numContours + " ...");
-            List<MatOfPoint2f> approxContours = getApproxPolyContours(validContours);
+            approxContours = getApproxPolyContours(validContours);
 
             publishProgress("Searching for enclose contour...");
             encloseContour = getEncloseContour(approxContours);
@@ -247,14 +342,224 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         protected void onPostExecute(Void result) {
             mProgressDialog.dismiss();
             drawContourOnMap(encloseContour);
+            //drawContourOnMap(approxContours);
+        }
+
+        /** Region grow */
+        private Mat grow(Point input_point) {
+
+            Mat final_mat = new Mat();
+
+            int mean_threshold = 5;
+
+            // load image
+            String filename = "/mnt/sdcard/Pictures/out.png";
+
+            try {
+                InputStream in = new FileInputStream(filename);
+
+                // process image
+                Bitmap originalBmp = BitmapFactory.decodeStream(in);
+                debugBmp = originalBmp;
+
+                int num_rows = originalBmp.getHeight();
+                int num_cols = originalBmp.getWidth();
+
+                Mat originalMat = new Mat(num_rows,
+                        num_cols,
+                        CvType.CV_8UC4,
+                        new Scalar(0));
+                Utils.bitmapToMat(originalBmp, originalMat);
+
+                /** Box */
+                // box size in pixels
+                //int box_size = 8;
+                int box_size = 4;
+                int box_rows = num_rows/box_size;
+                int box_cols = num_cols/box_size;
+                // calculate features
+                double[][] feat_mean = new double[box_rows][box_cols];
+                for (int i = 0; i < box_rows; i++) {
+                    for (int j = 0; j < box_cols; j++) {
+                        int start_row = i*box_size;
+                        int start_col = j*box_size;
+                        double avg_mean = 0;
+                        int    num_px   = 0;
+                        for (int k = start_row; k < start_row + box_size; k++) {
+                            for (int m = start_col; m < start_col + box_size; m++) {
+                                double[] px_rgb = originalMat.get(k, m);
+                                double tmp_mean = com.nwsmk.android.farmedgepro.Utils.mean(px_rgb);
+                                avg_mean = ((num_px*avg_mean) + (1*tmp_mean))/ (1 + num_px);
+                                num_px++;
+                            }
+                        }
+
+                        feat_mean[i][j] = avg_mean;
+                    }
+                }
+
+                // seed point info
+                int seed_row = (int) input_point.y/box_size;
+                int seed_col = (int) input_point.x/box_size;
+
+                // edge
+                int edge_index     = 1;
+                int[][] edge_list  = new int[box_rows*box_cols][2];
+                edge_list[0][0]    = seed_col;
+                edge_list[0][1]    = seed_row;
+
+                // neighbor
+                int neigh_index    = 0;
+                int[][] neigh_list = new int[box_rows*box_cols][2];
+                int[][] neigh_mask = new int[4][2];
+                neigh_mask[0][0] =  0; neigh_mask[0][1] = -1;
+                neigh_mask[1][0] =  0; neigh_mask[1][1] =  1;
+                neigh_mask[2][0] =  1; neigh_mask[2][1] =  0;
+                neigh_mask[3][0] = -1; neigh_mask[3][1] =  0;
+
+                // region
+                double mean_region = feat_mean[seed_row][seed_col];
+                int num_members    = 1;
+
+                // flags
+                int[][] box_flag = new int[box_rows][box_cols];
+                //int[][] img_flag = new int[num_rows][num_cols];
+
+                // output
+                int[][] box_out  = new int[box_rows][box_cols];
+                int[][] img_out  = new int[num_rows][num_cols];
+
+
+                //int currx = seed_col;
+                //int curry = seed_row;
+
+                // while ((sum2D(box_out) < (box_rows*box_cols)) && (currx > 10) && (curry > 10) && (currx < (box_cols-10)) && (curry < (box_rows-10)) && (edge_index > 0)) {
+                while ((sum2D(box_out) < (box_rows*box_cols)) && (edge_index > 0)) {
+
+                    // process all edge members
+                    int total_edge = edge_index;
+                    for (int k = 0; k < total_edge; k++) {
+
+                        edge_index = edge_index - 1;
+                        int[][] edge = new int[1][2];
+                        edge[0][0]   = edge_list[edge_index][0];
+                        edge[0][1]   = edge_list[edge_index][1];
+
+                        // find all neighbors of current edge
+                        for (int j = 0; j < neigh_mask.length; j++) {
+
+                            int x = min(max((edge[0][0] + neigh_mask[j][0]),0),(box_cols-1));
+                            int y = min(max((edge[0][1] + neigh_mask[j][1]),0),(box_rows-1));
+
+                            int[][] new_neighbor = new int[1][2];
+                            new_neighbor[0][0]   = x;
+                            new_neighbor[0][1]   = y;
+
+                            //currx = x;
+                            //curry = y;
+
+                            // only add unprocessed neighbors to neighbor list
+                            if (box_flag[y][x] == 0) {
+                                box_flag[y][x] = 1;
+
+                                // increase number of neighbor by one
+                                neigh_list[neigh_index][0] = x;
+                                neigh_list[neigh_index][1] = y;
+                                neigh_index = neigh_index + 1;
+                            }
+
+                        }
+
+                        // clear processed edge list
+                        edge_list[edge_index][0] = 0;
+                        edge_list[edge_index][1] = 0;
+                    }
+
+                    // process neighbors to get new edge
+                    int total_neigh = neigh_index;
+                    for (int j = 0; j < total_neigh; j++) {
+
+                        // check if neighbor is in the region
+                        // if YES, add this neighbor as a new edge
+                        neigh_index = neigh_index - 1;
+
+                        int x = neigh_list[neigh_index][0];
+                        int y = neigh_list[neigh_index][1];
+
+                        double mean_diff = abs(feat_mean[y][x]-mean_region);
+
+                        //Log.d("Mean Diff = ", Double.toString(mean_diff));
+
+                        if (mean_diff < mean_threshold) {
+
+                            // update region mean
+                            mean_region = ((1*feat_mean[y][x]) + (num_members*mean_region)) / (1 + num_members);
+                            num_members = num_members + 1;
+
+                            // update output
+                            box_out[y][x] = 2;
+
+                            // update edge index
+                            edge_list[edge_index][0] = x;
+                            edge_list[edge_index][1] = y;
+                            edge_index = edge_index + 1;
+                        }
+
+                        // clear processed neighbor
+                        neigh_list[neigh_index][0] = 0;
+                        neigh_list[neigh_index][1] = 0;
+                    }
+
+                    //Log.d(TAG, Double.toString(sum2D(box_out)));
+                }
+
+                // finish region growing
+                //Log.d(TAG, "END OF PROCESS");
+
+                // see output image
+                Mat out_mat = new Mat(num_rows, num_cols, CvType.CV_8U, new Scalar(0));
+                for (int i = 0; i < box_rows; i++) {
+                    for (int j = 0; j < box_cols; j++) {
+
+                        if (box_out[i][j] == 2) {
+
+                            int start_row = i * box_size;
+                            int start_col = j * box_size;
+
+                            for (int k = start_row; k < start_row + box_size; k++) {
+                                for (int m = start_col; m < start_col + box_size; m++) {
+                                    out_mat.put(k, m, 255);
+                                }
+                            }
+
+                        }
+
+                    }
+                }
+
+                // threshold
+                Imgproc.threshold(out_mat, final_mat, 50, 255, Imgproc.THRESH_BINARY);
+
+                Bitmap outBmp = originalBmp.copy(Bitmap.Config.ARGB_8888, false);
+                Utils.matToBitmap(final_mat, outBmp);
+
+                // for debugging purpose
+                //final_mat.size();
+
+            } catch (IOException ioe) {
+                Log.e(TAG, "Error reading image file from local storage.");
+            }
+
+            return final_mat;
         }
 
         /** Image processing methods */
         // get grayscale image
-        private Mat getGrayScaleMat() {
+        private Mat getGrayScaleMat(Mat inMat) {
 
             Mat grayMat = new Mat();
 
+            /** PRO VERSION
             try {
                 // load image
                 InputStream in = new FileInputStream("/mnt/sdcard/Pictures/out.png");
@@ -272,7 +577,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             } catch (IOException e) {
                 Log.e(TAG, "IOException: " + e.getMessage());
             }
-
+             **/
+            Imgproc.cvtColor(inMat, grayMat, Imgproc.COLOR_RGB2GRAY);
             return grayMat;
         }
 
@@ -282,6 +588,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             Mat cannyMat = new Mat();
 
             Imgproc.Canny(inMat, cannyMat, lowThreshold, highThreshold);
+
+            // for debugging purpose
+            Bitmap outBmp = debugBmp.copy(Bitmap.Config.ARGB_8888, false);
+            Utils.matToBitmap(cannyMat, outBmp);
 
             return cannyMat;
         }
@@ -335,6 +645,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 Imgproc.line(houghLinesMat, pt1, pt2, new Scalar(255, 0, 0), 2);
             }
 
+            // for debugging purpose
+            Bitmap outBmp = debugBmp.copy(Bitmap.Config.ARGB_8888, false);
+            Utils.matToBitmap(houghLinesMat, outBmp);
+
             return houghLinesMat;
         }
 
@@ -344,11 +658,12 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             List<MatOfPoint> contours = new ArrayList<>();
 
             // valid countours are contours with acceptable area
-            List<MatOfPoint> validContours;
+            //List<MatOfPoint> validContours;
 
             Mat hierarchy = new Mat();
 
-            Imgproc.findContours(inMat, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
+            //Imgproc.findContours(inMat, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_SIMPLE);
+            Imgproc.findContours(inMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
             Mat drawing = new Mat(inMat.rows(), inMat.cols(), CvType.CV_8UC3, new Scalar(0));
 
             Random r = new Random();
@@ -356,6 +671,10 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             for (int i=0; i<contours.size(); i++) {
                 Imgproc.drawContours(drawing, contours, i, new Scalar(r.nextInt(255), r.nextInt(255), r.nextInt(255)), -1);
             }
+
+            // for debugging purpose
+            Bitmap outBmp = debugBmp.copy(Bitmap.Config.ARGB_8888, false);
+            Utils.matToBitmap(drawing, outBmp);
 
             // find max area
             double maxArea = getContourMaxArea(contours, hierarchy);
@@ -446,6 +765,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
             }
 
             return polyMOP;
+        }
+
+
+        /** TEST METHODS */
+        private Mat getFloodFillMat(Mat inMat) {
+            Mat floodFillMat = Mat.zeros(inMat.rows()+2, inMat.cols()+2, CvType.CV_8U);
+
+            int flags = 4 + (255 << 8) + Imgproc.FLOODFILL_FIXED_RANGE;
+            //int flags = Imgproc.FLOODFILL_MASK_ONLY;
+            Imgproc.floodFill(inMat, floodFillMat, searchPoint, new Scalar(255, 255, 255),
+                    new Rect(new Point(0,0), new Point(5,5)), new Scalar(15), new Scalar(15), flags);
+
+            return floodFillMat;
         }
     }
 }
